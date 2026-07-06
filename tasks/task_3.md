@@ -111,6 +111,8 @@ input_rails = RunnableRails(config, input_key="user_input")
 Update the main conversation loop to validate input before processing:
 
 ```python
+from nemoguardrails.rails.llm.options import GenerationOptions
+
 # Load conversation history from Redis
 conversation = list(redis_history.messages)
 
@@ -133,7 +135,7 @@ rail_triggered = validation_context.get("allowed") is False or bool(
 
 if rail_triggered:
     # Rail triggered - skip further processing
-    print(f"System: {validation_result.content}")
+    print(f"System: {validation_result.response[0]["content"]}")
     continue  # Skip saving to Redis and proceed to next input
 
 # Rail not triggered - continue with normal processing
