@@ -27,13 +27,17 @@ Implement NeMo Guardrails to validate user input before processing. This involve
 
 Create a `config/` directory with two files:
 
-**`config/config.yml`** - Define the input rail, model provider, and general instructions:
+**`config/config.yml`** - Define the input rail, model provider, and general instructions: 
+
 
 ```yaml
 models:
   - type: main
     engine: openai
-    model: gpt-4
+    model: gpt-4o-mini
+    api_key_env_var: OPENAI_API_KEY
+    parameters:
+      base_url: OPENAI_BASE_URL
 
 rails:
   input:
@@ -48,6 +52,7 @@ instructions:
       The bot can access smartphone details using context, but must be given the exact phone model.
       If the bot is asked customer support queries like ordering, returns, tracking, etc, the bot replies it cannot help with such requests.
 ```
+Here, we use OpenAI models mostly for convenience. In general, it could be any model or engine (including local-hosted models and models from Hugging Face), more on that [here](https://docs.nvidia.com/nemo/guardrails/about-nemo-guardrails-library/supported-llms) and [here](https://docs.nvidia.com/nemo/guardrails/configure-guardrails/yaml-schema/model-configuration). 
 
 **`config/prompts.yml`** - Define the validation prompt for the check input task:
 
@@ -76,7 +81,7 @@ prompts:
 
 Among other LLM safety instructions, the bot should not respond to general customer support queries. Previously, we enforced this via the system prompt, but we don't have to anymore. Now, we can save costs because the user's input and chat history won't even be sent to the LLM!
 
-> Check out [the docs](https://docs.nvidia.com/nemo/guardrails/latest/getting-started/4-input-rails/README.html) to learn more about defining input rails.
+> Check out [the docs](https://docs.nvidia.com/nemo/guardrails/configure-guardrails/colang/colang-1/tutorials/4-input-rails) to learn more about defining input rails.
 
 #### Step 2: Integrate Guardrails into the Application
 
@@ -113,14 +118,18 @@ conversation = list(redis_history.messages)
 user_message = HumanMessage(user_input)
 conversation.append(user_message)
 
-# Validate input with guardrails BEFORE invoking chains
-validation_result = input_rails.invoke(
-    {"user_input": user_input},
-    config={"run_name": "input-validation", "callbacks": [langfuse_handler]}
+validation_result = input_rails.rails.generate(
+    messages=[{"role": "user", "content": user_input}],
+    options=GenerationOptions(
+        rails=["input"],
+        output_vars=["allowed", "triggered_input_rail", "bot_message"],
+    ),
 )
 
-# Check if input rail was triggered using metadata (not string matching)
-rail_triggered = isinstance(validation_result, AIMessage) and validation_result.response_metadata.get("rails_triggered", False)
+validation_context = validation_result.output_data or {}
+rail_triggered = validation_context.get("allowed") is False or bool(
+    validation_context.get("triggered_input_rail")
+)
 
 if rail_triggered:
     # Rail triggered - skip further processing
@@ -148,14 +157,13 @@ redis_history.add_message(response)
 
 **Key points:**
 - Validate input separately BEFORE invoking the context chain
-- Use `response_metadata.get("rails_triggered")` instead of string matching for robust rail detection
 - If the rail is triggered, skip tool processing and the review chain entirely
 - Only save messages to Redis when the rail is not triggered
 - This prevents both unnecessary LLM calls and storage of blocked interactions
 
 #### Step 3: Handle Langfuse Tracing
 
-The guardrails integration works transparently with Langfuse tracing. When the input rail is triggered, the blocked request will still appear in Langfuse traces, allowing you to monitor what inputs are being filtered. This helps you tune your guardrail rules over time.
+The guardrails integration works transparently with Langfuse tracing. When the input rail is triggered, the blocked request will still appear in Langfuse, allowing you to monitor what inputs are being filtered. This helps you tune your guardrail rules over time. You can do this by updating the spans directly.
 
 #### Optional: Add Output Rails
 
@@ -163,7 +171,7 @@ You can also implement output rails to validate the LLM output. For example, che
 
 As an extra challenge, implement dialogue flow guardrails to ensure the bot follows the expected conversation flow.
 
-> Learn more about RunnableRails in the [NVIDIA docs](https://docs.nvidia.com/nemo/guardrails/latest/user-guides/langchain/runnable-rails.html).
+> Learn more about RunnableRails in the [NVIDIA docs](https://docs.nvidia.com/nemo/guardrails/integration-with-third-party-libraries/langchain/runnable-rails).
 
 In case you run into issues, just use the logs to view what’s happening under the hood and use them to debug your application. You can also view chain execution by setting LangChain debug to true as follows:
 
@@ -223,9 +231,9 @@ Your application should now be able to validate user input and prevent the bot f
 ### Useful Resources
 ###### Docs
 - [Guardrails docs](https://docs.nvidia.com/nemo/guardrails/latest/index.html)
-- [Guardrails for LangChain](https://docs.nvidia.com/nemo/guardrails/latest/user-guides/langchain/index.html)
-- [Guardrails for LangChain Runnables](https://docs.nvidia.com/nemo/guardrails/latest/user-guides/langchain/runnable-rails.html)
-- [Dialogue flow guardrails](https://docs.nvidia.com/nemo/guardrails/latest/colang-2/getting-started/dialog-rails.html)
+- [Guardrails for LangChain](https://docs.nvidia.com/nemo/guardrails/integration-with-third-party-libraries/langchain/langchain-integration)
+- [Guardrails for LangChain Runnables](https://docs.nvidia.com/nemo/guardrails/integration-with-third-party-libraries/langchain/runnable-rails)
+- [Dialogue flow guardrails](https://docs.nvidia.com/nemo/guardrails/configure-guardrails/colang/colang-2/getting-started/dialog-rails)
 
 ---
 Next: [Managing API Keys and Budgets via LiteLLM Proxy.](./task_4.md)
