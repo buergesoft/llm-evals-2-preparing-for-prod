@@ -218,9 +218,9 @@ def main():
     # Bind the tools to the language model instance
     llm_with_tools = llm.bind_tools(tools)
 
-    context_lf = langfuse.get_prompt("context_system_prompt")
-    review_lf = langfuse.get_prompt("review_system_prompt")
-    goodbye_lf = langfuse.get_prompt("goodbye_system_prompt")
+    context_lf = langfuse.get_prompt(name="context_system_prompt", type="chat")
+    review_lf = langfuse.get_prompt(name="review_system_prompt", type="chat")
+    goodbye_lf = langfuse.get_prompt(name="goodbye_system_prompt", type="text")
 
     context_prompt = ChatPromptTemplate.from_messages([
         context_lf.get_langchain_prompt()[0],
