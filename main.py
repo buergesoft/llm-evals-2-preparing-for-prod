@@ -6,7 +6,7 @@ import uuid
 
 import dotenv
 from langchain_community.docstore.document import Document
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, trim_messages
 from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate, PromptTemplate
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -15,6 +15,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 from langfuse import observe, propagate_attributes, get_client
 from langfuse.langchain import CallbackHandler
+from langchain_redis import RedisChatMessageHistory
 
 # Load environment variables from .env file
 dotenv.load_dotenv()
@@ -41,8 +42,6 @@ embeddings_model = OpenAIEmbeddings(
     show_progress_bar=True
 )
 
-# Initialize conversation history
-conversation = []
 
 # Initialize Langfuse client
 langfuse = get_client()
@@ -167,7 +166,7 @@ def smartphone_info_tool(model: str) -> str:
 # Tool Call Handling and Response Generation
 # ---------------------------
 @observe(name="generate_context")
-def generate_context(ai_message: AIMessage) -> None:
+def generate_context(ai_message: AIMessage, conversation:list) -> None:
     """
     Process tool calls from the language model and append the AI message and
     each tool's response as ToolMessage objects to the conversation history.
@@ -234,7 +233,12 @@ def main():
     )
     goodbye_prompt.metadata = {"langfuse_prompt": goodbye_lf}
 
-    context_chain = context_prompt | llm_with_tools | generate_context
+    trimmer = trim_messages(
+        strategy="last", token_counter=llm, max_tokens=500,
+        start_on="human", end_on=("human", "tool"), include_system=True,
+    )
+
+    context_chain = context_prompt | trimmer | llm_with_tools | (lambda msg: generate_context(msg, conversation))
     review_chain = review_prompt | llm
 
     goodbye_chain = goodbye_prompt | llm
@@ -242,9 +246,12 @@ def main():
     # Initialize the Langfuse handler once for the entire conversation
     langfuse_handler = CallbackHandler()
 
+    history = RedisChatMessageHistory(session_id, redis_url=os.getenv("REDIS_URL"), ttl=3600)
+
     try:
         print("Welcome to the Smartphone Assistant! I can help you with smartphone features and comparisons.")
         while True:
+            conversation = list(history.messages)
             user_input = input("User: ").strip()
             if user_input.lower() in ["exit", "quit", "bye", "end"]:
                 # Create a parent span for the goodbye message
@@ -286,7 +293,8 @@ def main():
                 print("\nThank you for your feedback!")
                 break
 
-            conversation.append(HumanMessage(user_input))
+            user_message = HumanMessage(user_input)
+            conversation.append(user_message)
 
             # Create a parent span for this user query to group all chain invocations
             with langfuse.start_as_current_observation(
@@ -322,6 +330,8 @@ def main():
 
             print(f"System: {response.text}")
             conversation.append(response)
+            history.add_message(user_message)
+            history.add_message(response)
 
     except Exception as e:
         print(f"An unexpected error occurred in the main loop: {e}")
