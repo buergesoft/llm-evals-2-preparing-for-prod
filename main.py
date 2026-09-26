@@ -11,14 +11,20 @@ from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate, Prom
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
+from nemoguardrails.rails.llm.options import GenerationOptions
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 from langfuse import observe, propagate_attributes, get_client
 from langfuse.langchain import CallbackHandler
 from langchain_redis import RedisChatMessageHistory
+from nemoguardrails import RailsConfig
+from nemoguardrails.integrations.langchain.runnable_rails import RunnableRails
 
 # Load environment variables from .env file
 dotenv.load_dotenv()
+
+config = RailsConfig.from_path("config/")
+input_rails = RunnableRails(config, input_key="user_input")
 
 # Generate unique session_id and user_id once
 session_id = f"session-{uuid.uuid4().hex[:8]}"
@@ -302,6 +308,27 @@ def main():
                 name="user-query",
                 input={"user_input": user_input}
             ) as span:
+
+                validation_result = input_rails.rails.generate(
+                    messages=[{"role": "user", "content": user_input}],
+                    options=GenerationOptions(
+                        rails=["input"],
+                        output_vars=["allowed", "triggered_input_rail", "bot_message"],
+                    ),
+                )
+
+                validation_context = validation_result.output_data or {}
+                rail_triggered = validation_context.get("allowed") is False or bool(
+                    validation_context.get("triggered_input_rail")
+                )
+
+                if rail_triggered:
+                    # Rail triggered - skip further processing
+                    span.update(output={"response": validation_result.response[0]["content"],
+                                        "rail_triggered": True})
+                    print(f"System: {validation_result.response[0]["content"]}")
+                    continue  # Skip saving to Redis and proceed to next input
+
                 # Propagate trace attributes to all child observations
                 with propagate_attributes(
                     session_id=session_id,
